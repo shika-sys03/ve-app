@@ -8,7 +8,6 @@
 <meta name="apple-mobile-web-app-title" content="VoiceEye">
 <link rel="icon" type="image/png" href="icon.png">
 <link rel="apple-touch-icon" href="icon.png">
-<link rel="manifest" href="manifest.json">
 <title>VoiceEye リモート議事録</title>
 <style>
   :root {
@@ -129,15 +128,26 @@
     font-size: 14px;
   }
   .btn-sm {
-    padding: 7px 12px;
+    padding: 7px 10px;
     font-size: 12px;
     border-radius: 7px;
     background: #262c36;
     color: var(--text);
     border: 1px solid var(--border);
     cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
   }
   .btn-sm.primary { background: #2f855a; border-color: #2f855a; }
+  .btn-sm.gdoc { background: #1a73e8; border-color: #1a73e8; color: #fff; font-weight: 600; }
+  .gdoc-bar {
+    display: none;
+    gap: 8px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+  }
   .progress-box {
     text-align: center;
     padding: 10px;
@@ -258,6 +268,11 @@
     <div id="tabHistory" class="tab" onclick="switchTab('history')">📂 履歴一覧</div>
   </div>
 
+  <div id="gdocBar" class="gdoc-bar">
+    <a id="masterDocBtn" href="#" target="_blank" class="btn-sm gdoc" style="display:none">📘 まとめGoogleドキュメントを開く</a>
+    <a id="singleDocBtn" href="#" target="_blank" class="btn-sm gdoc" style="display:none">📄 個別ドキュメントを開く</a>
+  </div>
+
   <div id="viewMinutes">
     <div class="result-header">
       <span style="font-size:12px;color:var(--muted)" id="resultTitle">最新の議事録</span>
@@ -287,18 +302,46 @@
 <div id="toast" class="toast">✨ 完了しました！</div>
 
 <script>
+const urlParams = new URLSearchParams(location.search);
+let gasUrl = urlParams.get('gas') || localStorage.getItem('ve_gas_url') || '';
+if (urlParams.get('gas')) {
+  try { localStorage.setItem('ve_gas_url', gasUrl); } catch (e) {}
+}
+
 const GH_REPO = 'shika-sys03/ve-sync-private';
 let ghKey = localStorage.getItem('ve_gh_key') || '';
 if (location.hash && location.hash.includes('k=')) {
   const m = location.hash.match(/k=([^&]+)/);
   if (m && m[1]) {
     ghKey = decodeURIComponent(m[1]);
-    localStorage.setItem('ve_gh_key', ghKey);
-    try { history.replaceState(null, '', location.pathname); } catch (e) {}
+    try { localStorage.setItem('ve_gh_key', ghKey); } catch (e) {}
   }
 }
-const isCloudMode = location.hostname.endsWith('github.io') || !!ghKey;
+const isGasMode = !!gasUrl;
+const isGhCloudMode = !isGasMode && (location.hostname.endsWith('github.io') || !!ghKey);
 let cloudHistoryCache = [];
+
+function updateGdocButtons(masterUrl, singleUrl) {
+  const bar = document.getElementById('gdocBar');
+  const mBtn = document.getElementById('masterDocBtn');
+  const sBtn = document.getElementById('singleDocBtn');
+  let anyVisible = false;
+  if (masterUrl) {
+    mBtn.href = masterUrl;
+    mBtn.style.display = 'inline-flex';
+    anyVisible = true;
+  } else {
+    mBtn.style.display = 'none';
+  }
+  if (singleUrl) {
+    sBtn.href = singleUrl;
+    sBtn.style.display = 'inline-flex';
+    anyVisible = true;
+  } else {
+    sBtn.style.display = 'none';
+  }
+  bar.style.display = anyVisible ? 'flex' : 'none';
+}
 
 function decodeB64Utf8(b64) {
   const bin = atob(b64.replace(/\s/g, ''));
@@ -328,6 +371,23 @@ function blobToBase64(blob) {
     reader.onerror = reject;
     reader.readAsDataURL(blob);
   });
+}
+
+async function gasPost(payload) {
+  const res = await fetch(gasUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(payload)
+  });
+  return await res.json();
+}
+
+async function gasGet(paramsObj) {
+  const qs = new URLSearchParams(paramsObj);
+  qs.set('_t', Date.now());
+  const sep = gasUrl.includes('?') ? '&' : '?';
+  const res = await fetch(gasUrl + sep + qs.toString(), { cache: 'no-store' });
+  return await res.json();
 }
 
 async function ghGetJson(path) {
@@ -485,7 +545,22 @@ async function uploadAudio(blob, filename) {
 
   const note = document.getElementById('customNote').value || '';
   try {
-    if (isCloudMode) {
+    if (isGasMode) {
+      const audio_b64 = await blobToBase64(blob);
+      const jobId = 'job_' + Date.now();
+      const r = await gasPost({
+        action: 'upload_job',
+        job_id: jobId,
+        filename: filename,
+        note: note,
+        audio_b64: audio_b64
+      });
+      if (!r || !r.ok) throw new Error((r && r.error) || 'GAS Upload Error');
+      pBox.textContent = '⏳ PCで受信待機・文字起こし中...';
+      document.getElementById('statusBadge').textContent = '⏳ 処理中';
+      currentJobId = jobId;
+      pollStatus(currentJobId);
+    } else if (isGhCloudMode) {
       const audio_b64 = await blobToBase64(blob);
       const jobId = 'job_' + Date.now();
       await ghPutJson(`jobs/${jobId}.json`, {
@@ -520,13 +595,15 @@ async function pollStatus(jobId) {
   const timer = setInterval(async () => {
     try {
       let data = null;
-      if (isCloudMode) {
+      if (isGasMode) {
+        data = await gasGet({ action: 'status', job_id: jobId });
+      } else if (isGhCloudMode) {
         data = await ghGetJson(`status/${jobId}.json`);
       } else {
         const res = await fetch('/api/status?job_id=' + encodeURIComponent(jobId));
         data = await res.json();
       }
-      if (!data) return;
+      if (!data || data.status === 'not_found') return;
       pBox.textContent = data.progress || '⏳ PCで処理中...';
       if (data.TranscriptPartial) {
         document.getElementById('transcriptBox').textContent = data.TranscriptPartial;
@@ -537,8 +614,9 @@ async function pollStatus(jobId) {
         document.getElementById('minutesBox').textContent = data.minutes || '';
         document.getElementById('transcriptBox').textContent = data.transcript || '';
         document.getElementById('statusBadge').textContent = '🟢 完了!';
+        updateGdocButtons(data.master_doc_url, data.single_doc_url);
         switchTab('minutes');
-        showToast('✨ 議事録が完成しました！');
+        showToast('✨ 議事録＆Googleドキュメント作成完了！');
       } else if (data.status === 'error') {
         clearInterval(timer);
         pBox.textContent = '❌ エラー: ' + (data.error || '');
@@ -563,7 +641,22 @@ function switchTab(tab) {
 async function loadHistory() {
   const box = document.getElementById('historyList');
   try {
-    if (isCloudMode) {
+    if (isGasMode) {
+      const data = await gasGet({ action: 'latest' });
+      cloudHistoryCache = data.items || [];
+      if (cloudHistoryCache.length === 0) {
+        box.innerHTML = '<div style="padding:12px;color:var(--muted)">まだ保存された議事録がありません。</div>';
+        return;
+      }
+      box.innerHTML = cloudHistoryCache.map((item, idx) => `
+        <div class="history-item" onclick="openCloudHistoryItem(${idx})">
+          <div class="history-title">📄 ${item.title}</div>
+          <div class="history-time">${item.time}</div>
+        </div>
+      `).join('');
+      return;
+    }
+    if (isGhCloudMode) {
       const data = await ghGetJson('latest.json');
       cloudHistoryCache = data.items || [];
       if (cloudHistoryCache.length === 0) {
@@ -599,7 +692,9 @@ function openCloudHistoryItem(idx) {
   const item = cloudHistoryCache[idx];
   if (!item) return;
   document.getElementById('minutesBox').textContent = item.content || '';
-  document.getElementById('resultTitle').textContent = item.filename;
+  if (item.transcript) document.getElementById('transcriptBox').textContent = item.transcript;
+  document.getElementById('resultTitle').textContent = item.title || item.filename;
+  updateGdocButtons(item.master_doc_url, item.single_doc_url);
   switchTab('minutes');
 }
 
@@ -637,16 +732,24 @@ function showToast(msg) {
 // 初回ロード時に最新の議事録があれば読み込む
 (async () => {
   try {
-    if (isCloudMode) {
+    if (isGasMode) {
+      const data = await gasGet({ action: 'latest' });
+      if (data.minutes) document.getElementById('minutesBox').textContent = data.minutes;
+      if (data.transcript) document.getElementById('transcriptBox').textContent = data.transcript;
+      updateGdocButtons(data.master_doc_url, data.single_doc_url);
+      cloudHistoryCache = data.items || [];
+    } else if (isGhCloudMode) {
       const data = await ghGetJson('latest.json');
       if (data.minutes) document.getElementById('minutesBox').textContent = data.minutes;
       if (data.transcript) document.getElementById('transcriptBox').textContent = data.transcript;
+      updateGdocButtons(data.master_doc_url, data.single_doc_url);
       cloudHistoryCache = data.items || [];
     } else {
       const res = await fetch('/api/latest');
       const data = await res.json();
       if (data.minutes) document.getElementById('minutesBox').textContent = data.minutes;
       if (data.transcript) document.getElementById('transcriptBox').textContent = data.transcript;
+      updateGdocButtons(data.master_doc_url, data.single_doc_url);
     }
   } catch (e) {}
 })();
