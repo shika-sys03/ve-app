@@ -309,8 +309,10 @@ if (urlParams.get('gas')) {
 }
 
 const GH_REPO = 'shika-sys03/ve-sync-private';
-let ghKey = localStorage.getItem('ve_gh_key') || '';
-if (location.hash && location.hash.includes('k=')) {
+let ghKey = urlParams.get('k') || localStorage.getItem('ve_gh_key') || '';
+if (urlParams.get('k')) {
+  try { localStorage.setItem('ve_gh_key', ghKey); } catch (e) {}
+} else if (location.hash && location.hash.includes('k=')) {
   const m = location.hash.match(/k=([^&]+)/);
   if (m && m[1]) {
     ghKey = decodeURIComponent(m[1]);
