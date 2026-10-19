@@ -263,9 +263,10 @@
 
 <div class="card">
   <div class="tabs">
-    <div id="tabMinutes" class="tab active" onclick="switchTab('minutes')">✨ 議事録・要約</div>
-    <div id="tabTranscript" class="tab" onclick="switchTab('transcript')">📝 文字起こし</div>
-    <div id="tabHistory" class="tab" onclick="switchTab('history')">📂 履歴一覧</div>
+    <div id="tabMinutes" class="tab active" onclick="switchTab('minutes')">✨ 議事録</div>
+    <div id="tabTranscript" class="tab" onclick="switchTab('transcript')">📝 全文</div>
+    <div id="tabHistory" class="tab" onclick="switchTab('history')">📂 履歴</div>
+    <div id="tabWatch" class="tab" onclick="switchTab('watch')">⌚ Watch</div>
   </div>
 
   <div id="gdocBar" class="gdoc-bar">
@@ -296,6 +297,36 @@
 
   <div id="viewHistory" style="display:none">
     <div id="historyList" class="content-box" style="padding:4px 0;">読み込み中...</div>
+  </div>
+
+  <div id="viewWatch" style="display:none">
+    <div style="margin-bottom:12px;">
+      <button class="btn btn-rec" style="width:100%;height:48px;font-size:15px;" onclick="remoteTogglePcRec()">
+        ⌚ PC本体の録音を遠隔で「開始 / 停止」
+      </button>
+    </div>
+    <div class="content-box" style="max-height:none;font-size:13px;line-height:1.65;">
+      <div style="font-weight:700;color:#63b3ed;margin-bottom:6px;">⌚ Apple Watch ショートカット設定手順（2ブロックだけ！）</div>
+      <div style="margin-bottom:8px;">
+        <b>【パターンA：Apple Watch単体で手元録音 → 自動でPCへ送信】</b><br>
+        1. 下のボタンで<b>「① Watch録音送信用URL」</b>をコピーします。<br>
+        <button class="btn-sm gdoc" style="margin:6px 0;width:100%;justify-content:center;padding:8px;" onclick="copyWatchUrl('upload')">📋 ① Watch録音送信用URLをコピー</button><br>
+        2. iPhoneの純正<b>「ショートカット」アプリ</b>を開き、右上の「<b>＋</b>」を押します。<br>
+        3. <b>アクションを追加①</b>：検索で<b>「オーディオを録音」</b>を追加します。<br>
+        4. <b>アクションを追加②</b>：検索で<b>「URLの内容を取得」</b>を追加し、以下に設定します：<br>
+        　・<b>URL</b>：手順1でコピーしたURLを貼り付け<br>
+        　・<b>方法（Method）</b>：<code>POST</code> に変更<br>
+        　・<b>リクエスト本文</b>：<code>ファイル</code> に変更<br>
+        　・<b>ファイル</b>：<code>録音したオーディオ</code> を選択<br>
+        5. 下の <b>「ⓘ（情報）」アイコン ＞「Apple Watchに表示」をON</b> にすれば完了！文字盤（コンプリケーション）にも配置できます。
+      </div>
+      <hr style="border:none;border-top:1px solid var(--border);margin:10px 0;">
+      <div>
+        <b>【パターンB：WatchからPCの録音を1タップで開始/停止】</b><br>
+        ショートカットに<b>「URLの内容を取得」</b>1個だけを追加し、下のURLを貼るだけで手首からPC録音をON/OFFできます！<br>
+        <button class="btn-sm primary" style="margin:6px 0;width:100%;justify-content:center;padding:8px;" onclick="copyWatchUrl('pc_rec')">📋 ② PC遠隔録音スイッチURLをコピー</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -632,12 +663,51 @@ function switchTab(tab) {
   document.getElementById('tabMinutes').classList.toggle('active', tab === 'minutes');
   document.getElementById('tabTranscript').classList.toggle('active', tab === 'transcript');
   document.getElementById('tabHistory').classList.toggle('active', tab === 'history');
+  const tw = document.getElementById('tabWatch');
+  if (tw) tw.classList.toggle('active', tab === 'watch');
 
   document.getElementById('viewMinutes').style.display = tab === 'minutes' ? 'block' : 'none';
   document.getElementById('viewTranscript').style.display = tab === 'transcript' ? 'block' : 'none';
   document.getElementById('viewHistory').style.display = tab === 'history' ? 'block' : 'none';
+  const vw = document.getElementById('viewWatch');
+  if (vw) vw.style.display = tab === 'watch' ? 'block' : 'none';
 
   if (tab === 'history') loadHistory();
+}
+
+async function remoteTogglePcRec() {
+  try {
+    if (isGasMode) {
+      await gasGet({ action: 'watch_pc_rec', fmt: 'json' });
+      showToast('⌚ PCへ「録音 開始/停止」を送信しました！');
+    } else if (isGhCloudMode) {
+      const cmdId = 'cmd_toggle_' + Date.now();
+      await ghPutJson(`jobs/${cmdId}.json`, { cmd: 'toggle_rec', ts: Date.now() });
+      showToast('⌚ PCへ「録音 開始/停止」を送信しました！');
+    } else {
+      const res = await fetch('/api/watch/toggle_rec?fmt=json');
+      const d = await res.json();
+      showToast(d.message || '⌚ PCの録音を切り替えました！');
+    }
+  } catch (e) {
+    showToast('❌ 送信エラー: ' + e.message);
+  }
+}
+
+function copyWatchUrl(kind) {
+  let target = '';
+  if (isGasMode) {
+    const sep = gasUrl.includes('?') ? '&' : '?';
+    target = gasUrl + sep + 'action=' + (kind === 'upload' ? 'watch_upload' : 'watch_pc_rec');
+  } else if (!isGhCloudMode) {
+    target = location.origin + (kind === 'upload' ? '/api/watch/upload' : '/api/watch/toggle_rec');
+  } else {
+    showToast('💡 先にPCの「📘 Google連携」を設定すると4G/5G用のWatch URLが発行されます');
+    return;
+  }
+  navigator.clipboard.writeText(target).then(() => {
+    showToast('📋 Watchショートカット用URLをコピーしました！');
+  });
 }
 
 async function loadHistory() {
