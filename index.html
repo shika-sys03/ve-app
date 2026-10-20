@@ -334,12 +334,13 @@
       <div style="font-weight:700;color:#63b3ed;margin-bottom:6px;">⌚ Apple Watch ショートカット設定手順（2ブロックだけ！）</div>
       <div style="margin-bottom:8px;">
         <b>【パターンA：Apple Watch単体で手元録音 → 自動でPCへ送信】</b><br>
-        1. 下のボタンで<b>「① Watch録音送信用URL」</b>をコピーします。<br>
-        <button class="btn-sm gdoc" style="margin:6px 0;width:100%;justify-content:center;padding:8px;" onclick="copyWatchUrl('upload')">📋 ① Watch録音送信用URLをコピー</button><br>
+        1. 下のボタンで<b>「① Watch録音送信用URL（4G/5G・出先対応）」</b>をコピーします。<br>
+        <input id="watchUploadUrlBox" class="note-input" type="text" readonly style="margin:6px 0 2px;font-family:monospace;font-size:11px;color:#38ef7d;" value="URL読込中...">
+        <button class="btn-sm gdoc" style="margin:4px 0 6px;width:100%;justify-content:center;padding:8px;" onclick="copyWatchUrl('upload')">📋 ① Watch録音送信用URLをコピー</button><br>
         2. iPhoneの純正<b>「ショートカット」アプリ</b>を開き、右上の「<b>＋</b>」を押します。<br>
         3. <b>アクションを追加①</b>：検索で<b>「オーディオを録音」</b>を追加します。<br>
         4. <b>アクションを追加②</b>：検索で<b>「URLの内容を取得」</b>を追加し、以下に設定します：<br>
-        　・<b>URL</b>：手順1でコピーしたURLを貼り付け<br>
+        　・<b>URL</b>：手順1でコピーしたURL（<code>https://script.google.com/...</code>）を貼り付け<br>
         　・<b>方法（Method）</b>：<code>POST</code> に変更<br>
         　・<b>リクエスト本文</b>：<code>ファイル</code> に変更<br>
         　・<b>ファイル</b>：<code>録音したオーディオ</code> を選択<br>
@@ -349,7 +350,8 @@
       <div>
         <b>【パターンB：WatchからPCの録音を1タップで開始/停止】</b><br>
         ショートカットに<b>「URLの内容を取得」</b>1個だけを追加し、下のURLを貼るだけで手首からPC録音をON/OFFできます！<br>
-        <button class="btn-sm primary" style="margin:6px 0;width:100%;justify-content:center;padding:8px;" onclick="copyWatchUrl('pc_rec')">📋 ② PC遠隔録音スイッチURLをコピー</button>
+        <input id="watchPcRecUrlBox" class="note-input" type="text" readonly style="margin:6px 0 2px;font-family:monospace;font-size:11px;color:#79c0ff;" value="URL読込中...">
+        <button class="btn-sm primary" style="margin:4px 0;width:100%;justify-content:center;padding:8px;" onclick="copyWatchUrl('pc_rec')">📋 ② PC遠隔録音スイッチURLをコピー</button>
       </div>
     </div>
   </div>
@@ -719,9 +721,23 @@ async function remoteTogglePcRec() {
   }
 }
 
+function updateWatchUrlBoxes() {
+  const upBox = document.getElementById('watchUploadUrlBox');
+  const pcBox = document.getElementById('watchPcRecUrlBox');
+  if (!upBox || !pcBox) return;
+  if (gasUrl) {
+    const sep = gasUrl.includes('?') ? '&' : '?';
+    upBox.value = gasUrl + sep + 'action=watch_upload';
+    pcBox.value = gasUrl + sep + 'action=watch_pc_rec';
+  } else if (!isGhCloudMode) {
+    upBox.value = location.origin + '/api/watch/upload (※社内Wi-Fi専用・出先はGoogle連携が必要)';
+    pcBox.value = location.origin + '/api/watch/toggle_rec (※社内Wi-Fi専用・出先はGoogle連携が必要)';
+  }
+}
+
 function copyWatchUrl(kind) {
   let target = '';
-  if (isGasMode) {
+  if (gasUrl) {
     const sep = gasUrl.includes('?') ? '&' : '?';
     target = gasUrl + sep + 'action=' + (kind === 'upload' ? 'watch_upload' : 'watch_pc_rec');
   } else if (!isGhCloudMode) {
@@ -731,7 +747,7 @@ function copyWatchUrl(kind) {
     return;
   }
   navigator.clipboard.writeText(target).then(() => {
-    showToast('📋 Watchショートカット用URLをコピーしました！');
+    showToast('📋 4G/5G対応のWatch用URLをコピーしました！');
   });
 }
 
@@ -838,6 +854,7 @@ setInterval(() => {
 if (urlParams.get('tab') === 'watch' || urlParams.get('watch') === '1') {
   switchTab('watch');
 }
+updateWatchUrlBoxes();
 
 // 初回ロード時に最新の議事録があれば読み込む
 (async () => {
@@ -854,6 +871,11 @@ if (urlParams.get('tab') === 'watch' || urlParams.get('watch') === '1') {
       data = await res.json();
     }
     if (data) {
+      if (data.gas_url && !gasUrl) {
+        gasUrl = data.gas_url;
+        try { localStorage.setItem('ve_gas_url', gasUrl); } catch (e) {}
+      }
+      updateWatchUrlBoxes();
       if (data.minutes) {
         document.getElementById('minutesBox').textContent = data.minutes;
         const wm = document.getElementById('watchMiniSummary');
