@@ -362,42 +362,50 @@
 <script>
 const urlParams = new URLSearchParams(location.search);
 let gasUrl = urlParams.get('gas') || localStorage.getItem('ve_gas_url') || '';
-if (urlParams.get('gas')) {
+if (urlParams.get('gas') && gasUrl.startsWith('https://script.google.com/')) {
   try { localStorage.setItem('ve_gas_url', gasUrl); } catch (e) {}
 }
 
-const GH_REPO = 'shika-sys03/ve-sync-private';
-let ghKey = urlParams.get('k') || localStorage.getItem('ve_gh_key') || '';
-if (urlParams.get('k')) {
-  try { localStorage.setItem('ve_gh_key', ghKey); } catch (e) {}
-} else if (location.hash && location.hash.includes('k=')) {
-  const m = location.hash.match(/k=([^&]+)/);
-  if (m && m[1]) {
-    ghKey = decodeURIComponent(m[1]);
-    try { localStorage.setItem('ve_gh_key', ghKey); } catch (e) {}
-  }
+let localToken = urlParams.get('token') || localStorage.getItem('ve_local_token') || '';
+if (urlParams.get('token')) {
+  try { localStorage.setItem('ve_local_token', localToken); } catch (e) {}
 }
+// 旧バージョンのGitHubトークンが万一残っていれば削除
+try { localStorage.removeItem('ve_gh_key'); } catch (e) {}
+
 const isGasMode = !!gasUrl;
-const isGhCloudMode = !isGasMode && (location.hostname.endsWith('github.io') || !!ghKey);
+const isGhCloudMode = false;
 let cloudHistoryCache = [];
+
+function localFetch(url, options = {}) {
+  const headers = Object.assign({}, options.headers || {});
+  if (localToken) headers['X-VoiceEye-Token'] = localToken;
+  return fetch(url, Object.assign({}, options, { headers }));
+}
+
+function isSafeGoogleUrl(u) {
+  return typeof u === 'string' && (u.startsWith('https://docs.google.com/') || u.startsWith('https://drive.google.com/'));
+}
 
 function updateGdocButtons(masterUrl, singleUrl) {
   const bar = document.getElementById('gdocBar');
   const mBtn = document.getElementById('masterDocBtn');
   const sBtn = document.getElementById('singleDocBtn');
   let anyVisible = false;
-  if (masterUrl) {
+  if (isSafeGoogleUrl(masterUrl)) {
     mBtn.href = masterUrl;
     mBtn.style.display = 'inline-flex';
     anyVisible = true;
   } else {
+    mBtn.removeAttribute('href');
     mBtn.style.display = 'none';
   }
-  if (singleUrl) {
+  if (isSafeGoogleUrl(singleUrl)) {
     sBtn.href = singleUrl;
     sBtn.style.display = 'inline-flex';
     anyVisible = true;
   } else {
+    sBtn.removeAttribute('href');
     sBtn.style.display = 'none';
   }
   bar.style.display = anyVisible ? 'flex' : 'none';
@@ -620,22 +628,8 @@ async function uploadAudio(blob, filename) {
       document.getElementById('statusBadge').textContent = '⏳ 処理中';
       currentJobId = jobId;
       pollStatus(currentJobId);
-    } else if (isGhCloudMode) {
-      const audio_b64 = await blobToBase64(blob);
-      const jobId = 'job_' + Date.now();
-      await ghPutJson(`jobs/${jobId}.json`, {
-        job_id: jobId,
-        filename: filename,
-        note: note,
-        audio_b64: audio_b64,
-        ts: Date.now()
-      });
-      pBox.textContent = '⏳ PCで受信待機・文字起こし中...';
-      document.getElementById('statusBadge').textContent = '⏳ 処理中';
-      currentJobId = jobId;
-      pollStatus(currentJobId);
     } else {
-      const res = await fetch('/api/upload?filename=' + encodeURIComponent(filename) + '&note=' + encodeURIComponent(note), {
+      const res = await localFetch('/api/upload?filename=' + encodeURIComponent(filename) + '&note=' + encodeURIComponent(note), {
         method: 'POST',
         body: blob
       });
@@ -657,10 +651,8 @@ async function pollStatus(jobId) {
       let data = null;
       if (isGasMode) {
         data = await gasGet({ action: 'status', job_id: jobId });
-      } else if (isGhCloudMode) {
-        data = await ghGetJson(`status/${jobId}.json`);
       } else {
-        const res = await fetch('/api/status?job_id=' + encodeURIComponent(jobId));
+        const res = await localFetch('/api/status?job_id=' + encodeURIComponent(jobId));
         data = await res.json();
       }
       if (!data || data.status === 'not_found') return;
@@ -707,12 +699,8 @@ async function remoteTogglePcRec() {
     if (isGasMode) {
       await gasGet({ action: 'watch_pc_rec', fmt: 'json' });
       showToast('⌚ PCへ「録音 開始/停止」を送信しました！');
-    } else if (isGhCloudMode) {
-      const cmdId = 'cmd_toggle_' + Date.now();
-      await ghPutJson(`jobs/${cmdId}.json`, { cmd: 'toggle_rec', ts: Date.now() });
-      showToast('⌚ PCへ「録音 開始/停止」を送信しました！');
     } else {
-      const res = await fetch('/api/watch/toggle_rec?fmt=json');
+      const res = await localFetch('/api/watch/toggle_rec?fmt=json', { method: 'POST' });
       const d = await res.json();
       showToast(d.message || '⌚ PCの録音を切り替えました！');
     }
@@ -729,9 +717,10 @@ function updateWatchUrlBoxes() {
     const sep = gasUrl.includes('?') ? '&' : '?';
     upBox.value = gasUrl + sep + 'action=watch_upload';
     pcBox.value = gasUrl + sep + 'action=watch_pc_rec';
-  } else if (!isGhCloudMode) {
-    upBox.value = location.origin + '/api/watch/upload (※社内Wi-Fi専用・出先はGoogle連携が必要)';
-    pcBox.value = location.origin + '/api/watch/toggle_rec (※社内Wi-Fi専用・出先はGoogle連携が必要)';
+  } else {
+    const tokQ = localToken ? '?token=' + encodeURIComponent(localToken) : '';
+    upBox.value = location.origin + '/api/watch/upload' + tokQ + ' (※社内Wi-Fi専用・出先はGoogle連携が必要)';
+    pcBox.value = location.origin + '/api/watch/toggle_rec' + tokQ + ' (※社内Wi-Fi専用・出先はGoogle連携が必要)';
   }
 }
 
@@ -740,14 +729,44 @@ function copyWatchUrl(kind) {
   if (gasUrl) {
     const sep = gasUrl.includes('?') ? '&' : '?';
     target = gasUrl + sep + 'action=' + (kind === 'upload' ? 'watch_upload' : 'watch_pc_rec');
-  } else if (!isGhCloudMode) {
-    target = location.origin + (kind === 'upload' ? '/api/watch/upload' : '/api/watch/toggle_rec');
   } else {
-    showToast('💡 先にPCの「📘 Google連携」を設定すると4G/5G用のWatch URLが発行されます');
-    return;
+    const tokQ = localToken ? '?token=' + encodeURIComponent(localToken) : '';
+    target = location.origin + (kind === 'upload' ? '/api/watch/upload' : '/api/watch/toggle_rec') + tokQ;
   }
   navigator.clipboard.writeText(target).then(() => {
     showToast('📋 4G/5G対応のWatch用URLをコピーしました！');
+  });
+}
+
+function renderSafeHistoryList(box, items, isCloud) {
+  box.textContent = '';
+  if (!items || items.length === 0) {
+    const empty = document.createElement('div');
+    empty.style.padding = '12px';
+    empty.style.color = 'var(--muted)';
+    empty.textContent = 'まだ保存された議事録がありません。';
+    box.appendChild(empty);
+    return;
+  }
+  items.forEach((item, idx) => {
+    const row = document.createElement('div');
+    row.className = 'history-item';
+    const titleEl = document.createElement('div');
+    titleEl.className = 'history-title';
+    titleEl.textContent = '📄 ' + (item.title || '');
+    const timeEl = document.createElement('div');
+    timeEl.className = 'history-time';
+    timeEl.textContent = item.time || '';
+    row.appendChild(titleEl);
+    row.appendChild(timeEl);
+    row.addEventListener('click', () => {
+      if (isCloud) {
+        openCloudHistoryItem(idx);
+      } else {
+        openHistoryItem(item.filename || '');
+      }
+    });
+    box.appendChild(row);
   });
 }
 
@@ -757,47 +776,19 @@ async function loadHistory() {
     if (isGasMode) {
       const data = await gasGet({ action: 'latest' });
       cloudHistoryCache = data.items || [];
-      if (cloudHistoryCache.length === 0) {
-        box.innerHTML = '<div style="padding:12px;color:var(--muted)">まだ保存された議事録がありません。</div>';
-        return;
-      }
-      box.innerHTML = cloudHistoryCache.map((item, idx) => `
-        <div class="history-item" onclick="openCloudHistoryItem(${idx})">
-          <div class="history-title">📄 ${item.title}</div>
-          <div class="history-time">${item.time}</div>
-        </div>
-      `).join('');
+      renderSafeHistoryList(box, cloudHistoryCache, true);
       return;
     }
-    if (isGhCloudMode) {
-      const data = await ghGetJson('latest.json');
-      cloudHistoryCache = data.items || [];
-      if (cloudHistoryCache.length === 0) {
-        box.innerHTML = '<div style="padding:12px;color:var(--muted)">まだ保存された議事録がありません。</div>';
-        return;
-      }
-      box.innerHTML = cloudHistoryCache.map((item, idx) => `
-        <div class="history-item" onclick="openCloudHistoryItem(${idx})">
-          <div class="history-title">📄 ${item.title}</div>
-          <div class="history-time">${item.time}</div>
-        </div>
-      `).join('');
-      return;
-    }
-    const res = await fetch('/api/history');
+    const res = await localFetch('/api/history');
     const data = await res.json();
-    if (!data.items || data.items.length === 0) {
-      box.innerHTML = '<div style="padding:12px;color:var(--muted)">まだ保存された議事録がありません。</div>';
-      return;
-    }
-    box.innerHTML = data.items.map(item => `
-      <div class="history-item" onclick="openHistoryItem('${item.filename}')">
-        <div class="history-title">📄 ${item.title}</div>
-        <div class="history-time">${item.time}</div>
-      </div>
-    `).join('');
+    renderSafeHistoryList(box, data.items || [], false);
   } catch (e) {
-    box.innerHTML = '<div style="padding:12px;color:var(--danger)">履歴の取得に失敗しました。</div>';
+    box.textContent = '';
+    const errDiv = document.createElement('div');
+    errDiv.style.padding = '12px';
+    errDiv.style.color = 'var(--danger)';
+    errDiv.textContent = '履歴の取得に失敗しました。';
+    box.appendChild(errDiv);
   }
 }
 
@@ -813,7 +804,7 @@ function openCloudHistoryItem(idx) {
 
 async function openHistoryItem(filename) {
   try {
-    const res = await fetch('/api/history_item?file=' + encodeURIComponent(filename));
+    const res = await localFetch('/api/history_item?file=' + encodeURIComponent(filename));
     const data = await res.json();
     document.getElementById('minutesBox').textContent = data.content || '';
     document.getElementById('resultTitle').textContent = filename;
@@ -863,17 +854,18 @@ updateWatchUrlBoxes();
     if (isGasMode) {
       data = await gasGet({ action: 'latest' });
       cloudHistoryCache = data.items || [];
-    } else if (isGhCloudMode) {
-      data = await ghGetJson('latest.json');
-      cloudHistoryCache = data.items || [];
     } else {
-      const res = await fetch('/api/latest');
+      const res = await localFetch('/api/latest');
       data = await res.json();
     }
     if (data) {
-      if (data.gas_url && !gasUrl) {
+      if (data.gas_url && !gasUrl && data.gas_url.startsWith('https://script.google.com/')) {
         gasUrl = data.gas_url;
         try { localStorage.setItem('ve_gas_url', gasUrl); } catch (e) {}
+      }
+      if (data.local_token && !localToken) {
+        localToken = data.local_token;
+        try { localStorage.setItem('ve_local_token', localToken); } catch (e) {}
       }
       updateWatchUrlBoxes();
       if (data.minutes) {
